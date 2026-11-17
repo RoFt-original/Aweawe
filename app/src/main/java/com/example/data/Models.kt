@@ -1,7 +1,14 @@
 package com.example.data
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
 import android.util.Log
 import androidx.annotation.Keep
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentId
@@ -9,20 +16,66 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.IgnoreExtraProperties
 import com.google.firebase.firestore.ServerTimestamp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import kotlin.math.min
+
+data class PresetAvatar(
+    val key: String,
+    val emoji: String,
+    val labelRu: String
+)
+
+val PresetAvatars = listOf(
+    PresetAvatar("rocket", "🚀", "Ракета"),
+    PresetAvatar("crown", "👑", "Корона"),
+    PresetAvatar("sparkles", "✨", "Искра"),
+    PresetAvatar("cat", "🐱", "Котик"),
+    PresetAvatar("fire", "🔥", "Огонь"),
+    PresetAvatar("bolt", "⚡", "Молния"),
+    PresetAvatar("music", "🎧", "Музыка"),
+    PresetAvatar("palette", "🎨", "Арт"),
+    PresetAvatar("heart", "💜", "Сердце"),
+    PresetAvatar("planet", "🪐", "Планета"),
+    PresetAvatar("coffee", "☕", "Кофе"),
+    PresetAvatar("star", "🌟", "Звезда")
+)
+
+fun findPresetAvatar(key: String): PresetAvatar =
+    PresetAvatars.firstOrNull { it.key == key } ?: PresetAvatars.first()
+
+@Keep
+@IgnoreExtraProperties
+data class MemberProfile(
+    @DocumentId val id: String = "",
+    val memberId: String = "",
+    val nickname: String = "",
+    val statusText: String = "",
+    val avatarType: String = "PRESET",
+    val avatarData: String = "rocket",
+    val colorIndex: Long = 0L,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
 
 @Keep
 @IgnoreExtraProperties
 data class Note(
     @DocumentId val id: String = "",
-    val userId: String = "",
     val title: String = "",
     val content: String = "",
     val category: String = "Личное",
     val colorIndex: Long = 0L,
     val pinned: Boolean = false,
     val reminderEpochMillis: Long = 0L,
+    val authorId: String = "",
+    val authorName: String = "Участник",
+    val authorAvatarType: String = "PRESET",
+    val authorAvatarData: String = "rocket",
+    val authorColorIndex: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
@@ -42,7 +95,6 @@ enum class SchedulePriority(val labelRu: String) {
 @IgnoreExtraProperties
 data class ScheduleItem(
     @DocumentId val id: String = "",
-    val userId: String = "",
     val title: String = "",
     val description: String = "",
     val dateKey: String = "",
@@ -52,24 +104,17 @@ data class ScheduleItem(
     val completed: Boolean = false,
     val reminderEnabled: Boolean = false,
     val reminderEpochMillis: Long = 0L,
+    val authorId: String = "",
+    val authorName: String = "Участник",
+    val authorAvatarType: String = "PRESET",
+    val authorAvatarData: String = "rocket",
+    val authorColorIndex: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     val priorityEnum: SchedulePriority
         get() = SchedulePriority.fromRaw(priority)
 }
-
-@Keep
-@IgnoreExtraProperties
-data class UserSettings(
-    @DocumentId val id: String = "",
-    val userId: String = "",
-    val themeMode: String = "SYSTEM",
-    val paletteName: String = "INDIGO",
-    val notificationsEnabled: Boolean = true,
-    @ServerTimestamp val createdAt: Timestamp? = null,
-    @ServerTimestamp val updatedAt: Timestamp? = null
-)
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -120,6 +165,41 @@ fun handleFirestoreError(exception: Throwable, operationType: OperationType, pat
     val jsonString = errorInfoJson.toString()
     Log.e("FirestoreError", "Firestore Error: $jsonString")
     return jsonString
+}
+
+object AvatarPhotoHelper {
+    suspend fun encodeUriToBase64Thumbnail(context: Context, uri: Uri): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: return@withContext null
+                val original = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: return@withContext null
+                val side = min(original.width, original.height)
+                val xOffset = (original.width - side) / 2
+                val yOffset = (original.height - side) / 2
+                val cropped = Bitmap.createBitmap(original, xOffset, yOffset, side, side)
+                val scaled = Bitmap.createScaledBitmap(cropped, 128, 128, true)
+                val out = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, 72, out)
+                val encoded = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+                if (encoded.length <= 34000) encoded else null
+            } catch (e: Exception) {
+                Log.w("AvatarPhotoHelper", "Failed to encode avatar photo", e)
+                null
+            }
+        }
+
+    fun decodeBase64ToImageBitmap(base64Str: String): ImageBitmap? {
+        if (base64Str.isBlank()) return null
+        return try {
+            val bytes = Base64.decode(base64Str, Base64.DEFAULT)
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            bmp?.asImageBitmap()
+        } catch (_: Exception) {
+            null
+        }
+    }
 }
 
 val DefaultNoteCategories = listOf(

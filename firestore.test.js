@@ -8,8 +8,6 @@ const fs = require("node:fs");
 
 let testEnv;
 const PROJECT_ID = process.env.GCP_PROJECT || "demo-no-project";
-const ALICE_UID = "alice_123";
-const BOB_UID = "bob_456";
 
 const [emulatorHost, emulatorPortStr] = (process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8085").split(":");
 const emulatorPort = parseInt(emulatorPortStr, 10);
@@ -38,119 +36,131 @@ beforeEach(async () => {
   }
 });
 
-test("Unauthenticated user: cannot read or write notes, scheduleItems, or settings", async () => {
-  const unauthDb = testEnv.unauthenticatedContext().firestore();
-  const now = new Date(Date.now() - 1000);
-
-  await assertFails(unauthDb.collection("users").doc(ALICE_UID).collection("notes").get());
-  await assertFails(
-    unauthDb.collection("users").doc(ALICE_UID).collection("notes").doc("note_1").set({
-      userId: ALICE_UID,
-      title: "Hack",
-      content: "Body",
-      category: "Личное",
-      colorIndex: 0,
-      pinned: false,
-      reminderEpochMillis: 0,
-      createdAt: now,
-      updatedAt: now,
-    })
-  );
-
-  await assertFails(unauthDb.collection("users").doc(ALICE_UID).collection("scheduleItems").get());
-  await assertFails(unauthDb.collection("users").doc(ALICE_UID).collection("settings").get());
-});
-
-test("Authenticated owner: valid Note create, partial update, list, and delete succeed; invalid writes fail", async () => {
-  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+test("MemberProfile: valid create, update, and list succeed; invalid payload or immutable mutation fails", async () => {
+  const db = testEnv.unauthenticatedContext().firestore();
   const created = new Date(Date.now() - 10000);
-  const noteRef = aliceDb.collection("users").doc(ALICE_UID).collection("notes").doc("note_1");
+  const memberRef = db.collection("shared_members").doc("member_artem_1");
 
-  // Valid create matching NoteRepository payload (no @DocumentId 'id' key)
   await assertSucceeds(
-    noteRef.set({
-      userId: ALICE_UID,
-      title: "Список идей",
-      content: "Сделать синхронизацию через облако",
-      category: "Идеи",
-      colorIndex: 2,
-      pinned: true,
-      reminderEpochMillis: 1795000000000,
+    memberRef.set({
+      memberId: "member_artem_1",
+      nickname: "Артём",
+      statusText: "На связи 🚀",
+      avatarType: "PRESET",
+      avatarData: "rocket",
+      colorIndex: 0,
       createdAt: created,
       updatedAt: created,
     })
   );
 
-  // List query matching NoteRepository.observeNotes
-  await assertSucceeds(
-    aliceDb.collection("users").doc(ALICE_UID).collection("notes").get()
-  );
+  await assertSucceeds(db.collection("shared_members").get());
 
-  // Partial update matching NoteRepository.updateNote
   await assertSucceeds(
-    noteRef.update({
-      title: "Обновленный список идей",
-      content: "Новое описание",
-      category: "Работа",
-      colorIndex: 3,
-      pinned: false,
-      reminderEpochMillis: 0,
+    memberRef.update({
+      nickname: "Артём PRO",
+      statusText: "Работаю над планом",
+      avatarType: "PRESET",
+      avatarData: "crown",
+      colorIndex: 2,
       updatedAt: new Date(Date.now() - 1000),
     })
   );
 
-  // Reject mutating immutable createdAt
+  // Reject mutating createdAt or adding unexpected keys
   await assertFails(
-    noteRef.update({
+    memberRef.update({
       createdAt: new Date(Date.now() - 500),
       updatedAt: new Date(Date.now() - 500),
     })
   );
-
-  // Reject extra @DocumentId 'id' key on create
   await assertFails(
-    aliceDb.collection("users").doc(ALICE_UID).collection("notes").doc("note_2").set({
-      id: "note_2",
-      userId: ALICE_UID,
-      title: "Bad Note",
-      content: "Body",
-      category: "Личное",
+    db.collection("shared_members").doc("member_bad").set({
+      id: "member_bad",
+      memberId: "member_bad",
+      nickname: "Bad",
+      statusText: "",
+      avatarType: "PRESET",
+      avatarData: "star",
       colorIndex: 0,
-      pinned: false,
-      reminderEpochMillis: 0,
       createdAt: created,
       updatedAt: created,
+    })
+  );
+});
+
+test("SharedNote: valid create, co-editing update, list, and delete succeed; invalid schema fails", async () => {
+  const db = testEnv.unauthenticatedContext().firestore();
+  const created = new Date(Date.now() - 10000);
+  const noteRef = db.collection("shared_notes").doc("note_1");
+
+  await assertSucceeds(
+    noteRef.set({
+      title: "Общий список идей",
+      content: "Все участники могут редактировать",
+      category: "Идеи",
+      colorIndex: 1,
+      pinned: true,
+      reminderEpochMillis: 0,
+      authorId: "member_artem_1",
+      authorName: "Артём",
+      authorAvatarType: "PRESET",
+      authorAvatarData: "rocket",
+      authorColorIndex: 0,
+      createdAt: created,
+      updatedAt: created,
+    })
+  );
+
+  await assertSucceeds(db.collection("shared_notes").get());
+
+  await assertSucceeds(
+    noteRef.update({
+      title: "Обновленный общий список",
+      pinned: false,
+      authorId: "member_anna_2",
+      authorName: "Анна",
+      updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+
+  await assertFails(
+    noteRef.update({
+      colorIndex: 99,
+      updatedAt: new Date(Date.now() - 1000),
     })
   );
 
   await assertSucceeds(noteRef.delete());
 });
 
-test("Authenticated owner: valid ScheduleItem create, partial update, and list succeed; invalid dateKey/priority fail", async () => {
-  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+test("SharedScheduleItem: valid create, toggle completed, and list succeed; invalid dateKey/priority fail", async () => {
+  const db = testEnv.unauthenticatedContext().firestore();
   const created = new Date(Date.now() - 10000);
-  const itemRef = aliceDb.collection("users").doc(ALICE_UID).collection("scheduleItems").doc("item_1");
+  const itemRef = db.collection("shared_schedule").doc("sched_1");
 
   await assertSucceeds(
     itemRef.set({
-      userId: ALICE_UID,
-      title: "Утренняя планерка",
-      description: "Обсудить задачи на спринт",
+      title: "Общий созвон команды",
+      description: "Обсудить план на день",
       dateKey: "2026-11-17",
-      startTime: "09:00",
-      endTime: "10:00",
+      startTime: "10:00",
+      endTime: "11:00",
       priority: "HIGH",
       completed: false,
       reminderEnabled: true,
       reminderEpochMillis: 1794934800000,
+      authorId: "member_artem_1",
+      authorName: "Артём",
+      authorAvatarType: "PRESET",
+      authorAvatarData: "rocket",
+      authorColorIndex: 0,
       createdAt: created,
       updatedAt: created,
     })
   );
 
-  await assertSucceeds(
-    aliceDb.collection("users").doc(ALICE_UID).collection("scheduleItems").get()
-  );
+  await assertSucceeds(db.collection("shared_schedule").get());
 
   await assertSucceeds(
     itemRef.update({
@@ -159,45 +169,10 @@ test("Authenticated owner: valid ScheduleItem create, partial update, and list s
     })
   );
 
-  // Reject invalid priority enum
   await assertFails(
     itemRef.update({
-      priority: "CRITICAL",
+      priority: "INVALID",
       updatedAt: new Date(Date.now() - 1000),
     })
-  );
-});
-
-test("Authenticated owner: valid UserSettings create and update succeed; cross-user access fails", async () => {
-  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
-  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
-  const created = new Date(Date.now() - 10000);
-  const prefRef = aliceDb.collection("users").doc(ALICE_UID).collection("settings").doc("preferences");
-
-  await assertSucceeds(
-    prefRef.set({
-      userId: ALICE_UID,
-      themeMode: "DARK",
-      paletteName: "INDIGO",
-      notificationsEnabled: true,
-      createdAt: created,
-      updatedAt: created,
-    })
-  );
-
-  await assertSucceeds(
-    prefRef.update({
-      themeMode: "LIGHT",
-      paletteName: "EMERALD",
-      updatedAt: new Date(Date.now() - 1000),
-    })
-  );
-
-  // Bob cannot read or update Alice's settings or notes
-  await assertFails(
-    bobDb.collection("users").doc(ALICE_UID).collection("settings").doc("preferences").get()
-  );
-  await assertFails(
-    bobDb.collection("users").doc(ALICE_UID).collection("notes").get()
   );
 });

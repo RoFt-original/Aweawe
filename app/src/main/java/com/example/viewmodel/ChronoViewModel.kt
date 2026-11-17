@@ -6,11 +6,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ChronoRepository
 import com.example.data.LocalThemePreferences
+import com.example.data.MemberProfile
 import com.example.data.Note
 import com.example.data.ScheduleItem
 import com.example.data.SchedulePriority
 import com.example.data.UiState
-import com.example.data.UserSettings
 import com.example.notifications.ReminderScheduler
 import com.example.ui.theme.ThemeMode
 import com.example.ui.theme.ThemePalette
@@ -40,8 +40,7 @@ data class CalendarDayUi(
 
 class ChronoViewModel(
     private val repository: ChronoRepository,
-    private val themePreferences: LocalThemePreferences,
-    private val currentUserId: String
+    private val themePreferences: LocalThemePreferences
 ) : ViewModel() {
 
     private val _searchQuery = MutableStateFlow("")
@@ -59,8 +58,28 @@ class ChronoViewModel(
     val snackbarMessage: StateFlow<String?> = _snackbarMessage.asStateFlow()
 
     private var hasSeededInitialData = false
+    private var lastSyncedMemberId = ""
 
-    val notesState: StateFlow<UiState<List<Note>>> = repository.observeNotes(currentUserId)
+    val membersState: StateFlow<UiState<List<MemberProfile>>> = repository.observeMembers()
+        .map<List<MemberProfile>, UiState<List<MemberProfile>>> { list ->
+            UiState.Success(list)
+        }
+        .catch { error ->
+            val firestoreError = generateSequence(error) { it.cause }
+                .filterIsInstance<FirebaseFirestoreException>()
+                .firstOrNull()
+            if (firestoreError == null && error is CancellationException) throw error
+            val rootError = firestoreError ?: error
+            Log.w(TAG, "Error observing members", rootError)
+            emit(UiState.Error(rootError.message ?: "Ошибка синхронизации списка участников"))
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
+            initialValue = UiState.Loading
+        )
+
+    val notesState: StateFlow<UiState<List<Note>>> = repository.observeNotes()
         .map<List<Note>, UiState<List<Note>>> { list ->
             UiState.Success(list)
         }
@@ -70,8 +89,8 @@ class ChronoViewModel(
                 .firstOrNull()
             if (firestoreError == null && error is CancellationException) throw error
             val rootError = firestoreError ?: error
-            Log.w(TAG, "Error observing notes", rootError)
-            emit(UiState.Error(rootError.message ?: "Ошибка загрузки заметок из облака"))
+            Log.w(TAG, "Error observing shared notes", rootError)
+            emit(UiState.Error(rootError.message ?: "Ошибка загрузки общих заметок"))
         }
         .stateIn(
             scope = viewModelScope,
@@ -79,7 +98,7 @@ class ChronoViewModel(
             initialValue = UiState.Loading
         )
 
-    val scheduleState: StateFlow<UiState<List<ScheduleItem>>> = repository.observeScheduleItems(currentUserId)
+    val scheduleState: StateFlow<UiState<List<ScheduleItem>>> = repository.observeScheduleItems()
         .map<List<ScheduleItem>, UiState<List<ScheduleItem>>> { list ->
             UiState.Success(list)
         }
@@ -89,34 +108,8 @@ class ChronoViewModel(
                 .firstOrNull()
             if (firestoreError == null && error is CancellationException) throw error
             val rootError = firestoreError ?: error
-            Log.w(TAG, "Error observing schedule items", rootError)
-            emit(UiState.Error(rootError.message ?: "Ошибка загрузки расписания из облака"))
-        }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS),
-            initialValue = UiState.Loading
-        )
-
-    val cloudSettingsState: StateFlow<UiState<UserSettings?>> = repository.observeUserSettings(currentUserId)
-        .map<UserSettings?, UiState<UserSettings?>> { settings ->
-            if (settings != null) {
-                themePreferences.updateFromCloud(
-                    mode = ThemeMode.fromRaw(settings.themeMode),
-                    palette = ThemePalette.fromRaw(settings.paletteName),
-                    notificationsEnabled = settings.notificationsEnabled
-                )
-            }
-            UiState.Success(settings)
-        }
-        .catch { error ->
-            val firestoreError = generateSequence(error) { it.cause }
-                .filterIsInstance<FirebaseFirestoreException>()
-                .firstOrNull()
-            if (firestoreError == null && error is CancellationException) throw error
-            val rootError = firestoreError ?: error
-            Log.w(TAG, "Error observing user settings", rootError)
-            emit(UiState.Error(rootError.message ?: "Ошибка синхронизации настроек темы"))
+            Log.w(TAG, "Error observing shared schedule", rootError)
+            emit(UiState.Error(rootError.message ?: "Ошибка загрузки общего расписания"))
         }
         .stateIn(
             scope = viewModelScope,
@@ -144,8 +137,44 @@ class ChronoViewModel(
         _snackbarMessage.value = msg
     }
 
+    fun syncOwnProfileOnStartup(profile: MemberProfile) {
+        if (profile.memberId.isBlank() || lastSyncedMemberId == profile.memberId) return
+        lastSyncedMemberId = profile.memberId
+        viewModelScope.launch {
+            repository.upsertMemberProfile(profile)
+        }
+    }
+
+    fun saveAndSyncProfile(
+        nickname: String,
+        statusText: String,
+        avatarType: String,
+        avatarData: String,
+        colorIndex: Int
+    ) {
+        viewModelScope.launch {
+            val savedProfile = themePreferences.saveProfile(
+                nickname = nickname,
+                statusText = statusText,
+                avatarType = avatarType,
+                avatarData = avatarData,
+                colorIndex = colorIndex
+            )
+            lastSyncedMemberId = savedProfile.memberId
+            repository.upsertMemberProfile(savedProfile).onSuccess {
+                val notes = (notesState.value as? UiState.Success)?.data ?: emptyList()
+                val sched = (scheduleState.value as? UiState.Success)?.data ?: emptyList()
+                repository.propagateAuthorProfileToItems(savedProfile, notes, sched)
+                _snackbarMessage.value = "Профиль «${savedProfile.nickname}» обновлён для всех участников!"
+            }.onFailure {
+                _snackbarMessage.value = "Профиль сохранён"
+            }
+        }
+    }
+
     fun saveNote(
         context: Context,
+        author: MemberProfile,
         existingNoteId: String?,
         title: String,
         content: String,
@@ -157,7 +186,7 @@ class ChronoViewModel(
         viewModelScope.launch {
             if (existingNoteId.isNullOrBlank()) {
                 val result = repository.addNote(
-                    userId = currentUserId,
+                    author = author,
                     title = title,
                     content = content,
                     category = category,
@@ -170,20 +199,20 @@ class ChronoViewModel(
                         ReminderScheduler.scheduleReminder(
                             context = context.applicationContext,
                             uniqueKey = "note_$newId",
-                            title = "Заметка: ${title.trim().ifEmpty { "Напоминание" }}",
-                            message = content.trim().ifEmpty { "Откройте ChronoNote для просмотра заметки" },
+                            title = "Заметка (${author.nickname}): ${title.trim().ifEmpty { "Напоминание" }}",
+                            message = content.trim().ifEmpty { "Откройте общее пространство ChronoNote" },
                             triggerAtMillis = reminderEpochMillis
                         )
-                        _snackbarMessage.value = "Заметка сохранена в облаке и напоминание установлено"
+                        _snackbarMessage.value = "Заметка добавлена в общее пространство с напоминанием"
                     } else {
-                        _snackbarMessage.value = "Заметка синхронизирована с облаком"
+                        _snackbarMessage.value = "Заметка синхронизирована со всеми участниками"
                     }
                 }.onFailure { err ->
-                    _snackbarMessage.value = "Ошибка сохранения заметки: ${err.localizedMessage ?: "проверьте сеть"}"
+                    _snackbarMessage.value = "Ошибка сохранения заметки: ${err.localizedMessage ?: ""}"
                 }
             } else {
                 val result = repository.updateNote(
-                    userId = currentUserId,
+                    author = author,
                     noteId = existingNoteId,
                     title = title,
                     content = content,
@@ -197,14 +226,14 @@ class ChronoViewModel(
                         ReminderScheduler.scheduleReminder(
                             context = context.applicationContext,
                             uniqueKey = "note_$existingNoteId",
-                            title = "Заметка: ${title.trim().ifEmpty { "Напоминание" }}",
-                            message = content.trim().ifEmpty { "Откройте ChronoNote для просмотра заметки" },
+                            title = "Заметка (${author.nickname}): ${title.trim().ifEmpty { "Напоминание" }}",
+                            message = content.trim().ifEmpty { "Откройте общее пространство ChronoNote" },
                             triggerAtMillis = reminderEpochMillis
                         )
                     } else {
                         ReminderScheduler.cancelReminder(context.applicationContext, "note_$existingNoteId")
                     }
-                    _snackbarMessage.value = "Изменения сохранены в облаке"
+                    _snackbarMessage.value = "Заметка обновлена в общем пространстве"
                 }.onFailure { err ->
                     _snackbarMessage.value = "Не удалось обновить заметку: ${err.localizedMessage ?: ""}"
                 }
@@ -214,7 +243,7 @@ class ChronoViewModel(
 
     fun toggleNotePinned(note: Note) {
         viewModelScope.launch {
-            repository.toggleNotePinned(currentUserId, note).onFailure { err ->
+            repository.toggleNotePinned(note).onFailure { err ->
                 _snackbarMessage.value = "Не удалось изменить закрепление: ${err.localizedMessage ?: ""}"
             }
         }
@@ -223,8 +252,8 @@ class ChronoViewModel(
     fun deleteNote(context: Context, note: Note) {
         viewModelScope.launch {
             ReminderScheduler.cancelReminder(context.applicationContext, "note_${note.id}")
-            repository.deleteNote(currentUserId, note.id).onSuccess {
-                _snackbarMessage.value = "Заметка удалена"
+            repository.deleteNote(note.id).onSuccess {
+                _snackbarMessage.value = "Заметка удалена из общего пространства"
             }.onFailure { err ->
                 _snackbarMessage.value = "Не удалось удалить заметку: ${err.localizedMessage ?: ""}"
             }
@@ -233,6 +262,7 @@ class ChronoViewModel(
 
     fun saveScheduleItem(
         context: Context,
+        author: MemberProfile,
         existingItem: ScheduleItem?,
         title: String,
         description: String,
@@ -250,7 +280,7 @@ class ChronoViewModel(
             }
             if (existingItem == null || existingItem.id.isBlank()) {
                 val result = repository.addScheduleItem(
-                    userId = currentUserId,
+                    author = author,
                     title = title,
                     description = description,
                     dateKey = dateKey,
@@ -265,20 +295,20 @@ class ChronoViewModel(
                         ReminderScheduler.scheduleReminder(
                             context = context.applicationContext,
                             uniqueKey = "sched_$newId",
-                            title = "План на день ($startTime): $title",
-                            message = description.ifBlank { "Запланированная задача в вашем расписании ChronoNote" },
+                            title = "Общий план ($startTime): $title",
+                            message = description.ifBlank { "Автор: ${author.nickname}" },
                             triggerAtMillis = computedEpoch
                         )
-                        _snackbarMessage.value = "Пункт плана добавлен и push-напоминание включено"
+                        _snackbarMessage.value = "Задача добавлена в общий план и напоминание включено"
                     } else {
-                        _snackbarMessage.value = "Пункт плана сохранен в облаке"
+                        _snackbarMessage.value = "Задача синхронизирована в общем календаре"
                     }
                 }.onFailure { err ->
                     _snackbarMessage.value = "Ошибка сохранения плана: ${err.localizedMessage ?: ""}"
                 }
             } else {
                 val result = repository.updateScheduleItem(
-                    userId = currentUserId,
+                    author = author,
                     itemId = existingItem.id,
                     title = title,
                     description = description,
@@ -295,16 +325,16 @@ class ChronoViewModel(
                         ReminderScheduler.scheduleReminder(
                             context = context.applicationContext,
                             uniqueKey = "sched_${existingItem.id}",
-                            title = "План на день ($startTime): $title",
-                            message = description.ifBlank { "Запланированная задача в вашем расписании ChronoNote" },
+                            title = "Общий план ($startTime): $title",
+                            message = description.ifBlank { "Автор: ${author.nickname}" },
                             triggerAtMillis = computedEpoch
                         )
                     } else {
                         ReminderScheduler.cancelReminder(context.applicationContext, "sched_${existingItem.id}")
                     }
-                    _snackbarMessage.value = "Расписание обновлено"
+                    _snackbarMessage.value = "Общее расписание обновлено"
                 }.onFailure { err ->
-                    _snackbarMessage.value = "Не удалось обновить пункт плана: ${err.localizedMessage ?: ""}"
+                    _snackbarMessage.value = "Не удалось обновить задачу: ${err.localizedMessage ?: ""}"
                 }
             }
         }
@@ -312,7 +342,7 @@ class ChronoViewModel(
 
     fun toggleScheduleCompleted(item: ScheduleItem) {
         viewModelScope.launch {
-            repository.toggleScheduleCompleted(currentUserId, item).onFailure { err ->
+            repository.toggleScheduleCompleted(item).onFailure { err ->
                 _snackbarMessage.value = "Ошибка обновления статуса: ${err.localizedMessage ?: ""}"
             }
         }
@@ -321,62 +351,60 @@ class ChronoViewModel(
     fun deleteScheduleItem(context: Context, item: ScheduleItem) {
         viewModelScope.launch {
             ReminderScheduler.cancelReminder(context.applicationContext, "sched_${item.id}")
-            repository.deleteScheduleItem(currentUserId, item.id).onSuccess {
-                _snackbarMessage.value = "Пункт расписания удален"
+            repository.deleteScheduleItem(item.id).onSuccess {
+                _snackbarMessage.value = "Задача удалена из расписания"
             }.onFailure { err ->
-                _snackbarMessage.value = "Не удалось удалить пункт: ${err.localizedMessage ?: ""}"
+                _snackbarMessage.value = "Не удалось удалить задачу: ${err.localizedMessage ?: ""}"
             }
         }
     }
 
-    fun updateThemeAndSync(
-        mode: ThemeMode,
-        palette: ThemePalette,
-        notificationsEnabled: Boolean
-    ) {
+    fun updateThemeMode(mode: ThemeMode) {
         viewModelScope.launch {
-            themePreferences.updateFromCloud(mode, palette, notificationsEnabled)
-            val alreadyExists = (cloudSettingsState.value as? UiState.Success)?.data != null
-            repository.saveUserSettings(
-                userId = currentUserId,
-                themeMode = mode,
-                palette = palette,
-                notificationsEnabled = notificationsEnabled,
-                alreadyExists = alreadyExists
-            ).onFailure { err ->
-                Log.w(TAG, "Failed to sync theme settings to cloud", err)
-            }
+            themePreferences.saveThemeMode(mode)
         }
     }
 
-    fun seedStarterNotes() {
+    fun updatePalette(palette: ThemePalette) {
         viewModelScope.launch {
-            repository.seedStarterNotes(currentUserId).onSuccess {
-                _snackbarMessage.value = "Демо-заметки созданы и синхронизированы с облаком"
-            }.onFailure { err ->
-                _snackbarMessage.value = "Ошибка создания заметок: ${err.localizedMessage ?: ""}"
+            themePreferences.savePalette(palette)
+        }
+    }
+
+    fun updateNotificationsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            themePreferences.saveNotificationsEnabled(enabled)
+        }
+    }
+
+    fun seedStarterNotes(author: MemberProfile) {
+        viewModelScope.launch {
+            repository.seedStarterNotes(author).onSuccess {
+                _snackbarMessage.value = "Демо-заметки добавлены в общее пространство"
             }
         }
     }
 
-    fun seedStarterScheduleForSelectedDate() {
+    fun seedStarterScheduleForSelectedDate(author: MemberProfile) {
         val dateKey = _selectedDateKey.value
         viewModelScope.launch {
-            repository.seedStarterScheduleForDate(currentUserId, dateKey).onSuccess {
-                _snackbarMessage.value = "План на день создан и синхронизирован с облаком"
-            }.onFailure { err ->
-                _snackbarMessage.value = "Ошибка создания плана: ${err.localizedMessage ?: ""}"
+            repository.seedStarterScheduleForDate(author, dateKey).onSuccess {
+                _snackbarMessage.value = "План на день создан в общем календаре"
             }
         }
     }
 
-    fun ensureInitialDemoDataIfEmpty(notes: List<Note>, scheduleItems: List<ScheduleItem>) {
-        if (hasSeededInitialData) return
+    fun ensureInitialDemoDataIfEmpty(
+        author: MemberProfile,
+        notes: List<Note>,
+        scheduleItems: List<ScheduleItem>
+    ) {
+        if (hasSeededInitialData || author.memberId.isBlank()) return
         if (notes.isEmpty() && scheduleItems.isEmpty()) {
             hasSeededInitialData = true
             viewModelScope.launch {
-                repository.seedStarterNotes(currentUserId)
-                repository.seedStarterScheduleForDate(currentUserId, _selectedDateKey.value)
+                repository.seedStarterNotes(author)
+                repository.seedStarterScheduleForDate(author, _selectedDateKey.value)
             }
         } else {
             hasSeededInitialData = true
@@ -395,7 +423,6 @@ class ChronoViewModel(
         fun buildCalendarStrip(): List<CalendarDayUi> {
             val cal = Calendar.getInstance()
             val todayKey = todayDateKey()
-            // Start 2 days before today and show 14 days total
             cal.add(Calendar.DAY_OF_YEAR, -2)
             val keyFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
             val dowFmt = SimpleDateFormat("EE", Locale.forLanguageTag("ru"))
@@ -437,7 +464,6 @@ class ChronoViewModel(
                 }
                 val target = cal.timeInMillis
                 if (target <= System.currentTimeMillis()) {
-                    // If the chosen time today has already passed, schedule a reminder in 60 seconds so user can experience it
                     System.currentTimeMillis() + 60_000L
                 } else {
                     target

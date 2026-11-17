@@ -84,13 +84,13 @@ fun NotesScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         // Search Bar
         OutlinedTextField(
             value = searchQuery,
             onValueChange = onSearchQueryChanged,
-            placeholder = { Text(stringResource(R.string.notes_search_hint)) },
+            placeholder = { Text("Поиск по заметкам, идеям или нику автора…") },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Default.Search,
@@ -118,7 +118,7 @@ fun NotesScreen(
                 .testTag("notes_search_bar")
         )
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // Category Filter Row
         LazyRow(
@@ -135,7 +135,7 @@ fun NotesScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         when (notesState) {
             is UiState.Loading -> {
@@ -161,7 +161,7 @@ fun NotesScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Ошибка синхронизации заметок",
+                            text = "Ошибка синхронизации общих заметок",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
@@ -181,12 +181,13 @@ fun NotesScreen(
                         val matchesQuery = q.isEmpty() ||
                             note.title.lowercase().contains(q) ||
                             note.content.lowercase().contains(q) ||
-                            note.category.lowercase().contains(q)
+                            note.category.lowercase().contains(q) ||
+                            note.authorName.lowercase().contains(q)
                         matchesCategory && matchesQuery
                     }
                 }
 
-                // Cloud Sync Status Pill
+                // Shared Database Status Pill
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -205,7 +206,7 @@ fun NotesScreen(
                             modifier = Modifier.size(18.dp)
                         )
                         Text(
-                            text = "Облако активно • ${filteredNotes.size} зам.",
+                            text = "Общие заметки участников • ${filteredNotes.size}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -295,12 +296,13 @@ private fun NoteItemCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(cardStyle.badgeColor)
+                    AuthorAttributionBadge(
+                        authorName = note.authorName,
+                        authorAvatarType = note.authorAvatarType,
+                        authorAvatarData = note.authorAvatarData,
+                        authorColorIndex = note.authorColorIndex.toInt()
                     )
+
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = cardStyle.badgeColor.copy(alpha = 0.16f)
@@ -351,7 +353,7 @@ private fun NoteItemCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             Text(
                 text = note.title,
@@ -420,7 +422,6 @@ private fun NoteItemCard(
                         }
                     }
 
-                    // Quick 1-tap push notification reminder button for any note
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),

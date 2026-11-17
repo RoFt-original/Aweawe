@@ -2,12 +2,7 @@ package com.example.data
 
 import android.content.Context
 import com.example.R
-import com.example.ui.theme.ThemeMode
-import com.example.ui.theme.ThemePalette
-import com.google.firebase.Firebase
 import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -22,8 +17,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
 class ChronoRepository(
-    private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = Firebase.auth
+    private val db: FirebaseFirestore
 ) {
     constructor(context: Context) : this(
         FirebaseFirestore.getInstance(
@@ -31,20 +25,38 @@ class ChronoRepository(
         )
     )
 
-    private fun requireAuthenticatedUid(expectedUserId: String): String {
-        val uid = auth.currentUser?.uid
-            ?: throw IllegalStateException("Необходим вход через Google для синхронизации с облаком.")
-        check(uid == expectedUserId && uid.isNotBlank()) {
-            "Аккаунт пользователя изменился. Повторите действие."
-        }
-        return uid
+    fun observeMembers(): Flow<List<MemberProfile>> = flow {
+        val path = "shared_members"
+        emitAll(
+            db.collection(path)
+                .snapshots()
+                .map { snapshot ->
+                    val list = snapshot.toObjects(
+                        MemberProfile::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    )
+                    list.sortedByDescending {
+                        (it.updatedAt ?: it.createdAt ?: Timestamp(0, 0)).seconds
+                    }
+                }
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                    val exceptionToLog = firestoreError ?: (error as? Exception)
+                    if (exceptionToLog != null) {
+                        handleFirestoreError(exceptionToLog, OperationType.LIST, path)
+                    }
+                    throw error
+                }
+        )
     }
 
-    fun observeNotes(userId: String): Flow<List<Note>> = flow {
-        require(userId.isNotBlank()) { "User ID must not be blank" }
-        val path = "users/$userId/notes"
+    fun observeNotes(): Flow<List<Note>> = flow {
+        val path = "shared_notes"
         emitAll(
-            db.collection("users").document(userId).collection("notes")
+            db.collection(path)
                 .snapshots()
                 .map { snapshot ->
                     val list = snapshot.toObjects(
@@ -62,7 +74,7 @@ class ChronoRepository(
                         .firstOrNull()
                     if (firestoreError == null && error is CancellationException) throw error
                     val exceptionToLog = firestoreError ?: (error as? Exception)
-                    if (exceptionToLog != null && auth.currentUser?.uid == userId) {
+                    if (exceptionToLog != null) {
                         handleFirestoreError(exceptionToLog, OperationType.LIST, path)
                     }
                     throw error
@@ -70,11 +82,10 @@ class ChronoRepository(
         )
     }
 
-    fun observeScheduleItems(userId: String): Flow<List<ScheduleItem>> = flow {
-        require(userId.isNotBlank()) { "User ID must not be blank" }
-        val path = "users/$userId/scheduleItems"
+    fun observeScheduleItems(): Flow<List<ScheduleItem>> = flow {
+        val path = "shared_schedule"
         emitAll(
-            db.collection("users").document(userId).collection("scheduleItems")
+            db.collection(path)
                 .snapshots()
                 .map { snapshot ->
                     val list = snapshot.toObjects(
@@ -93,7 +104,7 @@ class ChronoRepository(
                         .firstOrNull()
                     if (firestoreError == null && error is CancellationException) throw error
                     val exceptionToLog = firestoreError ?: (error as? Exception)
-                    if (exceptionToLog != null && auth.currentUser?.uid == userId) {
+                    if (exceptionToLog != null) {
                         handleFirestoreError(exceptionToLog, OperationType.LIST, path)
                     }
                     throw error
@@ -101,38 +112,54 @@ class ChronoRepository(
         )
     }
 
-    fun observeUserSettings(userId: String): Flow<UserSettings?> = flow {
-        require(userId.isNotBlank()) { "User ID must not be blank" }
-        val path = "users/$userId/settings/preferences"
-        emitAll(
-            db.collection("users").document(userId).collection("settings").document("preferences")
-                .snapshots()
-                .map { snapshot ->
-                    if (snapshot.exists()) {
-                        snapshot.toObject(
-                            UserSettings::class.java,
-                            DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
-                        )
-                    } else {
-                        null
-                    }
-                }
-                .catch { error ->
-                    val firestoreError = generateSequence(error) { it.cause }
-                        .filterIsInstance<FirebaseFirestoreException>()
-                        .firstOrNull()
-                    if (firestoreError == null && error is CancellationException) throw error
-                    val exceptionToLog = firestoreError ?: (error as? Exception)
-                    if (exceptionToLog != null && auth.currentUser?.uid == userId) {
-                        handleFirestoreError(exceptionToLog, OperationType.GET, path)
-                    }
-                    throw error
-                }
-        )
+    suspend fun upsertMemberProfile(profile: MemberProfile): Result<Unit> {
+        val cleanId = profile.memberId.trim().ifEmpty { "member_default" }
+        val docPath = "shared_members/$cleanId"
+        return try {
+            val docRef = db.collection("shared_members").document(cleanId)
+            val snap = docRef.get().await()
+            val cleanNickname = profile.nickname.trim().take(40).ifEmpty { "Участник" }
+            val cleanStatus = profile.statusText.trim().take(80)
+            val cleanAvatarType = if (profile.avatarType == "PHOTO") "PHOTO" else "PRESET"
+            val cleanAvatarData = profile.avatarData.ifBlank { "rocket" }.take(35000)
+            val cleanColor = profile.colorIndex.coerceIn(0L, 5L)
+
+            if (snap.exists()) {
+                docRef.update(
+                    mapOf(
+                        "nickname" to cleanNickname,
+                        "statusText" to cleanStatus,
+                        "avatarType" to cleanAvatarType,
+                        "avatarData" to cleanAvatarData,
+                        "colorIndex" to cleanColor,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                docRef.set(
+                    mapOf(
+                        "memberId" to cleanId,
+                        "nickname" to cleanNickname,
+                        "statusText" to cleanStatus,
+                        "avatarType" to cleanAvatarType,
+                        "avatarData" to cleanAvatarData,
+                        "colorIndex" to cleanColor,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docPath)
+            Result.failure(e)
+        }
     }
 
     suspend fun addNote(
-        userId: String,
+        author: MemberProfile,
         title: String,
         content: String,
         category: String,
@@ -140,25 +167,28 @@ class ChronoRepository(
         pinned: Boolean,
         reminderEpochMillis: Long
     ): Result<String> {
-        var docPath = "users/$userId/notes"
+        var docPath = "shared_notes"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             val cleanTitle = title.trim().take(150).ifEmpty { "Без названия" }
             val cleanContent = content.trim().take(10000)
             val cleanCategory = category.trim().take(40).ifEmpty { "Личное" }
             val safeColor = colorIndex.coerceIn(0, 5)
             val safeReminder = reminderEpochMillis.coerceAtLeast(0L)
 
-            val docRef = db.collection("users").document(uid).collection("notes").document()
+            val docRef = db.collection("shared_notes").document()
             docPath = docRef.path
             val payload = mapOf(
-                "userId" to uid,
                 "title" to cleanTitle,
                 "content" to cleanContent,
                 "category" to cleanCategory,
                 "colorIndex" to safeColor,
                 "pinned" to pinned,
                 "reminderEpochMillis" to safeReminder,
+                "authorId" to author.memberId.ifBlank { "member_default" },
+                "authorName" to author.nickname.trim().take(40).ifEmpty { "Участник" },
+                "authorAvatarType" to if (author.avatarType == "PHOTO") "PHOTO" else "PRESET",
+                "authorAvatarData" to author.avatarData.ifBlank { "rocket" }.take(35000),
+                "authorColorIndex" to author.colorIndex.coerceIn(0L, 5L),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
@@ -173,7 +203,7 @@ class ChronoRepository(
     }
 
     suspend fun updateNote(
-        userId: String,
+        author: MemberProfile,
         noteId: String,
         title: String,
         content: String,
@@ -182,9 +212,8 @@ class ChronoRepository(
         pinned: Boolean,
         reminderEpochMillis: Long
     ): Result<Unit> {
-        var docPath = "users/$userId/notes/$noteId"
+        var docPath = "shared_notes/$noteId"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             require(noteId.isNotBlank()) { "Note ID must not be blank" }
             val cleanTitle = title.trim().take(150).ifEmpty { "Без названия" }
             val cleanContent = content.trim().take(10000)
@@ -192,7 +221,7 @@ class ChronoRepository(
             val safeColor = colorIndex.coerceIn(0, 5)
             val safeReminder = reminderEpochMillis.coerceAtLeast(0L)
 
-            val docRef = db.collection("users").document(uid).collection("notes").document(noteId)
+            val docRef = db.collection("shared_notes").document(noteId)
             docPath = docRef.path
             docRef.update(
                 mapOf(
@@ -202,6 +231,11 @@ class ChronoRepository(
                     "colorIndex" to safeColor,
                     "pinned" to pinned,
                     "reminderEpochMillis" to safeReminder,
+                    "authorId" to author.memberId.ifBlank { "member_default" },
+                    "authorName" to author.nickname.trim().take(40).ifEmpty { "Участник" },
+                    "authorAvatarType" to if (author.avatarType == "PHOTO") "PHOTO" else "PRESET",
+                    "authorAvatarData" to author.avatarData.ifBlank { "rocket" }.take(35000),
+                    "authorColorIndex" to author.colorIndex.coerceIn(0L, 5L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
@@ -214,12 +248,11 @@ class ChronoRepository(
         }
     }
 
-    suspend fun toggleNotePinned(userId: String, note: Note): Result<Unit> {
-        var docPath = "users/$userId/notes/${note.id}"
+    suspend fun toggleNotePinned(note: Note): Result<Unit> {
+        var docPath = "shared_notes/${note.id}"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             require(note.id.isNotBlank()) { "Note ID must not be blank" }
-            val docRef = db.collection("users").document(uid).collection("notes").document(note.id)
+            val docRef = db.collection("shared_notes").document(note.id)
             docPath = docRef.path
             docRef.update(
                 mapOf(
@@ -236,12 +269,11 @@ class ChronoRepository(
         }
     }
 
-    suspend fun deleteNote(userId: String, noteId: String): Result<Unit> {
-        var docPath = "users/$userId/notes/$noteId"
+    suspend fun deleteNote(noteId: String): Result<Unit> {
+        var docPath = "shared_notes/$noteId"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             require(noteId.isNotBlank()) { "Note ID must not be blank" }
-            val docRef = db.collection("users").document(uid).collection("notes").document(noteId)
+            val docRef = db.collection("shared_notes").document(noteId)
             docPath = docRef.path
             docRef.delete().await()
             Result.success(Unit)
@@ -254,7 +286,7 @@ class ChronoRepository(
     }
 
     suspend fun addScheduleItem(
-        userId: String,
+        author: MemberProfile,
         title: String,
         description: String,
         dateKey: String,
@@ -264,9 +296,8 @@ class ChronoRepository(
         reminderEnabled: Boolean,
         reminderEpochMillis: Long
     ): Result<String> {
-        var docPath = "users/$userId/scheduleItems"
+        var docPath = "shared_schedule"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             val cleanTitle = title.trim().take(150).ifEmpty { "Пункт плана" }
             val cleanDesc = description.trim().take(2000)
             val safeDateKey = if (dateKey.matches(Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))) dateKey else "2026-11-17"
@@ -274,10 +305,9 @@ class ChronoRepository(
             val safeEnd = if (endTime.matches(Regex("^[0-9]{2}:[0-9]{2}$"))) endTime else "10:00"
             val safeReminder = reminderEpochMillis.coerceAtLeast(0L)
 
-            val docRef = db.collection("users").document(uid).collection("scheduleItems").document()
+            val docRef = db.collection("shared_schedule").document()
             docPath = docRef.path
             val payload = mapOf(
-                "userId" to uid,
                 "title" to cleanTitle,
                 "description" to cleanDesc,
                 "dateKey" to safeDateKey,
@@ -287,6 +317,11 @@ class ChronoRepository(
                 "completed" to false,
                 "reminderEnabled" to reminderEnabled,
                 "reminderEpochMillis" to safeReminder,
+                "authorId" to author.memberId.ifBlank { "member_default" },
+                "authorName" to author.nickname.trim().take(40).ifEmpty { "Участник" },
+                "authorAvatarType" to if (author.avatarType == "PHOTO") "PHOTO" else "PRESET",
+                "authorAvatarData" to author.avatarData.ifBlank { "rocket" }.take(35000),
+                "authorColorIndex" to author.colorIndex.coerceIn(0L, 5L),
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
@@ -301,7 +336,7 @@ class ChronoRepository(
     }
 
     suspend fun updateScheduleItem(
-        userId: String,
+        author: MemberProfile,
         itemId: String,
         title: String,
         description: String,
@@ -313,9 +348,8 @@ class ChronoRepository(
         reminderEnabled: Boolean,
         reminderEpochMillis: Long
     ): Result<Unit> {
-        var docPath = "users/$userId/scheduleItems/$itemId"
+        var docPath = "shared_schedule/$itemId"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             require(itemId.isNotBlank()) { "ScheduleItem ID must not be blank" }
             val cleanTitle = title.trim().take(150).ifEmpty { "Пункт плана" }
             val cleanDesc = description.trim().take(2000)
@@ -324,7 +358,7 @@ class ChronoRepository(
             val safeEnd = if (endTime.matches(Regex("^[0-9]{2}:[0-9]{2}$"))) endTime else "10:00"
             val safeReminder = reminderEpochMillis.coerceAtLeast(0L)
 
-            val docRef = db.collection("users").document(uid).collection("scheduleItems").document(itemId)
+            val docRef = db.collection("shared_schedule").document(itemId)
             docPath = docRef.path
             docRef.update(
                 mapOf(
@@ -337,6 +371,11 @@ class ChronoRepository(
                     "completed" to completed,
                     "reminderEnabled" to reminderEnabled,
                     "reminderEpochMillis" to safeReminder,
+                    "authorId" to author.memberId.ifBlank { "member_default" },
+                    "authorName" to author.nickname.trim().take(40).ifEmpty { "Участник" },
+                    "authorAvatarType" to if (author.avatarType == "PHOTO") "PHOTO" else "PRESET",
+                    "authorAvatarData" to author.avatarData.ifBlank { "rocket" }.take(35000),
+                    "authorColorIndex" to author.colorIndex.coerceIn(0L, 5L),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
@@ -349,12 +388,11 @@ class ChronoRepository(
         }
     }
 
-    suspend fun toggleScheduleCompleted(userId: String, item: ScheduleItem): Result<Unit> {
-        var docPath = "users/$userId/scheduleItems/${item.id}"
+    suspend fun toggleScheduleCompleted(item: ScheduleItem): Result<Unit> {
+        var docPath = "shared_schedule/${item.id}"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             require(item.id.isNotBlank()) { "ScheduleItem ID must not be blank" }
-            val docRef = db.collection("users").document(uid).collection("scheduleItems").document(item.id)
+            val docRef = db.collection("shared_schedule").document(item.id)
             docPath = docRef.path
             docRef.update(
                 mapOf(
@@ -371,12 +409,11 @@ class ChronoRepository(
         }
     }
 
-    suspend fun deleteScheduleItem(userId: String, itemId: String): Result<Unit> {
-        var docPath = "users/$userId/scheduleItems/$itemId"
+    suspend fun deleteScheduleItem(itemId: String): Result<Unit> {
+        var docPath = "shared_schedule/$itemId"
         return try {
-            val uid = requireAuthenticatedUid(userId)
             require(itemId.isNotBlank()) { "ScheduleItem ID must not be blank" }
-            val docRef = db.collection("users").document(uid).collection("scheduleItems").document(itemId)
+            val docRef = db.collection("shared_schedule").document(itemId)
             docPath = docRef.path
             docRef.delete().await()
             Result.success(Unit)
@@ -388,70 +425,69 @@ class ChronoRepository(
         }
     }
 
-    suspend fun saveUserSettings(
-        userId: String,
-        themeMode: ThemeMode,
-        palette: ThemePalette,
-        notificationsEnabled: Boolean,
-        alreadyExists: Boolean
-    ): Result<Unit> {
-        var docPath = "users/$userId/settings/preferences"
-        return try {
-            val uid = requireAuthenticatedUid(userId)
-            val docRef = db.collection("users").document(uid).collection("settings").document("preferences")
-            docPath = docRef.path
-            if (alreadyExists) {
-                docRef.update(
+    suspend fun propagateAuthorProfileToItems(
+        profile: MemberProfile,
+        notes: List<Note>,
+        scheduleItems: List<ScheduleItem>
+    ) {
+        val cleanNick = profile.nickname.trim().take(40).ifEmpty { "Участник" }
+        val cleanType = if (profile.avatarType == "PHOTO") "PHOTO" else "PRESET"
+        val cleanData = profile.avatarData.ifBlank { "rocket" }.take(35000)
+        val cleanColor = profile.colorIndex.coerceIn(0L, 5L)
+
+        for (note in notes.filter { it.authorId == profile.memberId }) {
+            try {
+                db.collection("shared_notes").document(note.id).update(
                     mapOf(
-                        "themeMode" to themeMode.name,
-                        "paletteName" to palette.name,
-                        "notificationsEnabled" to notificationsEnabled,
+                        "authorName" to cleanNick,
+                        "authorAvatarType" to cleanType,
+                        "authorAvatarData" to cleanData,
+                        "authorColorIndex" to cleanColor,
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 ).await()
-            } else {
-                docRef.set(
-                    mapOf(
-                        "userId" to uid,
-                        "themeMode" to themeMode.name,
-                        "paletteName" to palette.name,
-                        "notificationsEnabled" to notificationsEnabled,
-                        "createdAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+            } catch (_: Exception) {
             }
-            Result.success(Unit)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            handleFirestoreError(e, if (alreadyExists) OperationType.UPDATE else OperationType.CREATE, docPath)
-            Result.failure(e)
+        }
+
+        for (item in scheduleItems.filter { it.authorId == profile.memberId }) {
+            try {
+                db.collection("shared_schedule").document(item.id).update(
+                    mapOf(
+                        "authorName" to cleanNick,
+                        "authorAvatarType" to cleanType,
+                        "authorAvatarData" to cleanData,
+                        "authorColorIndex" to cleanColor,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } catch (_: Exception) {
+            }
         }
     }
 
-    suspend fun seedStarterNotes(userId: String): Result<Unit> {
+    suspend fun seedStarterNotes(author: MemberProfile): Result<Unit> {
         return try {
             val samples = listOf(
                 Triple(
-                    "Добро пожаловать в ChronoNote ☁️",
-                    "Ваши заметки и расписание автоматически синхронизируются между всеми устройствами через облако Firebase Firestore. Попробуйте закрепить заметку, сменить цветовую карточку или включить напоминание!",
+                    "Наше общее пространство ChronoNote 🚀",
+                    "База данных уже вшита и синхронизируется между всеми участниками в реальном времени! У каждого участника равные права на создание и редактирование заметок и плана на день, а на карточках отображается ваш ник и аватарка.",
                     "Личное" to 1
                 ),
                 Triple(
-                    "Идеи для проекта и продуктивности",
-                    "• Составлять план на день с вечера во вкладке «Расписание»\n• Выделять 2 главные задачи с высоким приоритетом\n• Использовать цветовые карточки для быстрого визуального поиска",
+                    "Идеи и общие задачи команды",
+                    "• Каждый участник может поменять свой ник, статус и фото профиля в любой момент\n• Закрепляйте самые важные заметки наверху\n• Добавляйте задачи в общее расписание календаря с Push-напоминаниями",
                     "Идеи" to 2
                 ),
                 Triple(
-                    "Список покупок на неделю",
-                    "• Свежеобжаренный кофе в зернах\n• Авокадо, шпинат и томаты черри\n• Овсяное молоко и греческий йогурт\n• Орехи и темный шоколад 85%",
+                    "Общий список покупок и планов",
+                    "• Свежеобжаренный кофе в зернах\n• Фрукты, ягоды и закуски для встречи\n• Проверить расписание на выходные",
                     "Покупки" to 3
                 )
             )
             samples.forEachIndexed { index, (title, body, meta) ->
                 addNote(
-                    userId = userId,
+                    author = author,
                     title = title,
                     content = body,
                     category = meta.first,
@@ -468,7 +504,7 @@ class ChronoRepository(
         }
     }
 
-    suspend fun seedStarterScheduleForDate(userId: String, dateKey: String): Result<Unit> {
+    suspend fun seedStarterScheduleForDate(author: MemberProfile, dateKey: String): Result<Unit> {
         return try {
             data class StarterSlot(
                 val title: String,
@@ -479,44 +515,44 @@ class ChronoRepository(
             )
             val slots = listOf(
                 StarterSlot(
-                    title = "Утренний обзор целей и приоритетов",
-                    desc = "Просмотреть расписание в календаре и ключевые заметки на день",
+                    title = "Утренняя сверка общего плана на день",
+                    desc = "Просмотреть задачи участников и ключевые заметки пространства",
                     start = "09:00",
                     end = "09:30",
                     priority = SchedulePriority.HIGH
                 ),
                 StarterSlot(
-                    title = "Глубокая работа над главной задачей",
-                    desc = "Сфокусированный блок без отвлечений с включенным напоминанием",
+                    title = "Фокус-блок по главным задачам",
+                    desc = "Работа по приоритетным пунктам с уведомлением",
                     start = "10:00",
                     end = "12:00",
                     priority = SchedulePriority.HIGH
                 ),
                 StarterSlot(
-                    title = "Обед и прогулка на свежем воздухе",
-                    desc = "Перезагрузка, отдых для глаз и легкая разминка",
+                    title = "Перерыв и отдых",
+                    desc = "Обед, прогулка и перезагрузка",
                     start = "13:00",
                     end = "14:00",
                     priority = SchedulePriority.LOW
                 ),
                 StarterSlot(
-                    title = "Командный созвон и синхронизация",
-                    desc = "Обсуждение текущих задач и подведение промежуточных итогов",
-                    start = "15:30",
-                    end = "16:30",
+                    title = "Совместное обсуждение идей",
+                    desc = "Обновить общие заметки и распределить планы на вечер",
+                    start = "16:00",
+                    end = "17:00",
                     priority = SchedulePriority.MEDIUM
                 ),
                 StarterSlot(
-                    title = "Подведение итогов дня и план на завтра",
-                    desc = "Отметить выполненные пункты и записать новые идеи в заметки",
-                    start = "19:00",
-                    end = "19:30",
+                    title = "Итоги дня и план на завтра",
+                    desc = "Отметить выполненные задачи в общем календаре",
+                    start = "19:30",
+                    end = "20:00",
                     priority = SchedulePriority.MEDIUM
                 )
             )
             for (slot in slots) {
                 addScheduleItem(
-                    userId = userId,
+                    author = author,
                     title = slot.title,
                     description = slot.desc,
                     dateKey = dateKey,

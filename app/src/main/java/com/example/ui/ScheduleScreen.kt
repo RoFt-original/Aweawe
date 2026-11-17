@@ -89,7 +89,7 @@ fun ScheduleScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         // Selected Date Title & Today Jump
         Row(
@@ -104,7 +104,7 @@ fun ScheduleScreen(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = if (selectedDayUi.isToday) "Сегодняшнее расписание и план на день" else "Выбранный день календаря",
+                    text = if (selectedDayUi.isToday) "Общий план участников на сегодня" else "Общее расписание на выбранный день",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -120,7 +120,7 @@ fun ScheduleScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         // Interactive 14-day Calendar Strip
         LazyRow(
@@ -140,7 +140,7 @@ fun ScheduleScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Daily Progress Summary Card
         val completedCount = dayItems.count { it.completed }
@@ -380,6 +380,13 @@ private fun ScheduleTimelineCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    AuthorAttributionBadge(
+                        authorName = item.authorName,
+                        authorAvatarType = item.authorAvatarType,
+                        authorAvatarData = item.authorAvatarData,
+                        authorColorIndex = item.authorColorIndex.toInt()
+                    )
+
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.primaryContainer

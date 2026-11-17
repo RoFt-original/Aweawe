@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -19,10 +18,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
@@ -32,11 +32,11 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,23 +45,32 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.data.MemberProfile
 import com.example.ui.theme.ThemeMode
 import com.example.ui.theme.ThemePalette
 
 @Composable
 fun ThemesAndCloudScreen(
-    userEmail: String?,
+    currentProfile: MemberProfile,
+    members: List<MemberProfile>,
     notesCount: Int,
     scheduleCount: Int,
     currentThemeMode: ThemeMode,
     currentPalette: ThemePalette,
     notificationsEnabled: Boolean,
+    onEditProfileClick: () -> Unit,
+    onMemberClick: (MemberProfile) -> Unit,
     onThemeModeSelected: (ThemeMode) -> Unit,
     onPaletteSelected: (ThemePalette) -> Unit,
     onNotificationsToggled: (Boolean) -> Unit,
-    onSendTestPushNotification: () -> Unit,
-    onSignOutClick: () -> Unit
+    onSendTestPushNotification: () -> Unit
 ) {
+    val allMembers = remember(currentProfile, members) {
+        val others = members.filter { it.memberId != currentProfile.memberId && it.nickname.isNotBlank() }
+        listOf(currentProfile) + others
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -69,7 +78,7 @@ fun ThemesAndCloudScreen(
         contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Cloud Account Status Card
+        // Current Participant Profile Card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -82,35 +91,29 @@ fun ThemesAndCloudScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CloudDone,
-                                contentDescription = "Облачная синхронизация",
-                                tint = MaterialTheme.colorScheme.onPrimary
-                            )
-                        }
+                        MemberAvatarBadge(
+                            avatarType = currentProfile.avatarType,
+                            avatarData = currentProfile.avatarData,
+                            colorIndex = currentProfile.colorIndex.toInt(),
+                            size = 64.dp,
+                            fontSize = 30.sp
+                        )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Облачная синхронизация активна",
-                                style = MaterialTheme.typography.titleMedium,
+                                text = currentProfile.nickname.ifBlank { "Участник" },
+                                style = MaterialTheme.typography.headlineMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = userEmail ?: "Аккаунт Google подключен",
-                                style = MaterialTheme.typography.bodySmall,
+                                text = currentProfile.statusText.ifBlank { "Участник общего пространства" },
+                                style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
                             )
                         }
@@ -121,30 +124,132 @@ fun ThemesAndCloudScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CloudStatBox(
-                            label = "Заметок в облаке",
+                            label = "Общих заметок",
                             value = notesCount.toString(),
                             modifier = Modifier.weight(1f)
                         )
                         CloudStatBox(
-                            label = "Задач в расписании",
+                            label = "Задач в плане",
                             value = scheduleCount.toString(),
+                            modifier = Modifier.weight(1f)
+                        )
+                        CloudStatBox(
+                            label = "Участников",
+                            value = allMembers.size.toString(),
                             modifier = Modifier.weight(1f)
                         )
                     }
 
-                    OutlinedButton(
-                        onClick = onSignOutClick,
+                    Button(
+                        onClick = onEditProfileClick,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("sign_out_button"),
+                            .testTag("edit_profile_button"),
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Logout,
-                            contentDescription = "Выйти из аккаунта"
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Изменить профиль"
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Сменить аккаунт / Выйти")
+                        Text("Изменить никнейм, статус и аватарку")
+                    }
+                }
+            }
+        }
+
+        // All Workspace Participants List
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Group,
+                            contentDescription = "Участники",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Участники общего пространства (${allMembers.size})",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudDone,
+                            contentDescription = "База данных вшита",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Единая база данных вшита • У всех равные права",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    allMembers.forEach { member ->
+                        val isMe = member.memberId == currentProfile.memberId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                                .clickable {
+                                    if (isMe) onEditProfileClick() else onMemberClick(member)
+                                }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            MemberAvatarBadge(
+                                avatarType = member.avatarType,
+                                avatarData = member.avatarData,
+                                colorIndex = member.colorIndex.toInt(),
+                                size = 44.dp,
+                                fontSize = 20.sp
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = member.nickname.ifBlank { "Участник" },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    if (isMe) {
+                                        Text(
+                                            text = "• Это вы",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = member.statusText.ifBlank { "Полный доступ к заметкам и плану" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
             }
