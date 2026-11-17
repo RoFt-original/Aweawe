@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">ChronoNote</string>
+    <string name="auth_welcome_title">ChronoNote Облако</string>
+    <string name="auth_welcome_subtitle">Синхронизация заметок, расписания календаря и напоминаний между всеми вашими устройствами в реальном времени.</string>
+    <string name="auth_sign_in_google">Войти через Google</string>
+    <string name="auth_feature_sync">Мгновенная синхронизация через облако</string>
+    <string name="auth_feature_planner">Календарь и поминутный план на день</string>
+    <string name="auth_feature_themes">Светлая, тёмная и 5 цветовых тем</string>
+    <string name="auth_feature_reminders">Push-уведомления и напоминания</string>
+    <string name="tab_notes">Заметки</string>
+    <string name="tab_schedule">Расписание</string>
+    <string name="tab_themes">Темы и облако</string>
+    <string name="notes_search_hint">Поиск по заметкам и идеям…</string>
+    <string name="notes_empty_title">У вас пока нет заметок</string>
+    <string name="notes_empty_subtitle">Создайте первую заметку или загрузите стартовый набор примеров, чтобы протестировать облачную синхронизацию.</string>
+    <string name="notes_seed_button">Заполнить демо-заметками</string>
+    <string name="schedule_empty_title">На этот день планов пока нет</string>
+    <string name="schedule_empty_subtitle">Составьте расписание на день с приоритетами и напоминаниями или добавьте шаблон продуктивного дня.</string>
+    <string name="schedule_seed_button">Создать план на день</string>
+    <string name="fab_add_note">Новая заметка</string>
+    <string name="fab_add_schedule">Новый пункт плана</string>
+    <string name="notification_channel_name">Напоминания ChronoNote</string>
+    <string name="notification_channel_desc">Уведомления о заметках и запланированных задачах на день</string>
+    <string name="test_notification_sent">Push-напоминание отправлено в шторку уведомлений!</string>
+</resources>

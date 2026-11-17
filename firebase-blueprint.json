@@ -1,0 +1,189 @@
+{
+  "entities": {
+    "Note": {
+      "title": "Note",
+      "description": "A cloud-synced user note with category, color accent, pin state, and optional reminder timestamp.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The UID of the note owner."
+        },
+        "title": {
+          "type": "string",
+          "description": "Note title (1 to 150 characters)."
+        },
+        "content": {
+          "type": "string",
+          "description": "Note body content (0 to 10000 characters)."
+        },
+        "category": {
+          "type": "string",
+          "description": "Category tag such as Личное, Работа, Идеи, Учеба, Покупки."
+        },
+        "colorIndex": {
+          "type": "integer",
+          "description": "Color palette card accent index (0 to 5)."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Whether the note is pinned to the top."
+        },
+        "reminderEpochMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds for local push notification reminder (0 if none)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "content",
+        "category",
+        "colorIndex",
+        "pinned",
+        "reminderEpochMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ScheduleItem": {
+      "title": "ScheduleItem",
+      "description": "A daily schedule / calendar planner item for a specific date and time slot with reminder support.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The UID of the schedule item owner."
+        },
+        "title": {
+          "type": "string",
+          "description": "Task or event title (1 to 150 characters)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Details or notes for the scheduled block (0 to 2000 characters)."
+        },
+        "dateKey": {
+          "type": "string",
+          "description": "ISO date string YYYY-MM-DD."
+        },
+        "startTime": {
+          "type": "string",
+          "description": "24-hour start time HH:mm."
+        },
+        "endTime": {
+          "type": "string",
+          "description": "24-hour end time HH:mm."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["HIGH", "MEDIUM", "LOW"],
+          "description": "Priority level of the daily plan item."
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Whether this scheduled item has been completed."
+        },
+        "reminderEnabled": {
+          "type": "boolean",
+          "description": "Whether push notification reminder is enabled for this item."
+        },
+        "reminderEpochMillis": {
+          "type": "integer",
+          "description": "Epoch milliseconds for the scheduled push reminder."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "title",
+        "description",
+        "dateKey",
+        "startTime",
+        "endTime",
+        "priority",
+        "completed",
+        "reminderEnabled",
+        "reminderEpochMillis",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "Cloud-synced theme and notification preferences for a user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The UID of the user."
+        },
+        "themeMode": {
+          "type": "string",
+          "enum": ["SYSTEM", "LIGHT", "DARK"],
+          "description": "Selected light/dark/system theme mode."
+        },
+        "paletteName": {
+          "type": "string",
+          "enum": ["INDIGO", "EMERALD", "AMBER", "ROSE", "OCEAN"],
+          "description": "Selected color theme accent palette."
+        },
+        "notificationsEnabled": {
+          "type": "boolean",
+          "description": "Whether push reminder notifications are enabled."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation server timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update server timestamp."
+        }
+      },
+      "required": [
+        "userId",
+        "themeMode",
+        "paletteName",
+        "notificationsEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/Note" },
+      "description": "User-scoped cloud-synced notes collection."
+    },
+    "/users/{userId}/scheduleItems/{itemId}": {
+      "schema": { "$ref": "#/entities/ScheduleItem" },
+      "description": "User-scoped daily schedule and calendar planner items."
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/UserSettings" },
+      "description": "User-scoped theme and notification settings."
+    }
+  }
+}
